@@ -1,0 +1,45 @@
+#!/bin/bash
+set -e
+LATEST_LINK="$1/latest"
+PREV_LINK="$1/previous"
+RSYNC=rsync
+PREV_LATEST=""
+
+[[ -z "$1" ]] && {
+    echo "You need to specify target location" >&2
+    exit 1
+}
+
+[[ "$(readlink -f $1)" =~ ${HOME}* ]] && {
+    echo "Target location needs to be on a different location" >&2
+    exit 1
+}
+
+TARGET_DIR="$(hostname)-$(date +%Y-%m-%d_%H.%M.%S)"
+
+echo "Backing up to $(readlink -f $1/${TARGET_DIR})"
+sleep 5
+
+if [[ -L "$LATEST_LINK" ]]; then
+    PREV_LATEST="$(basename $(readlink -f $LATEST_LINK))"
+fi
+rsync -av --delete --exclude=/.cache/ \
+    --exclude=/.vmware/ \
+    --exclude=/Downloads/ \
+    --exclude=/.ssh/ \
+    $HOME/ "$1/$TARGET_DIR"
+
+if [[ $? -eq 0 ]]; then
+    echo "Linking..."
+    if [[ -n "$PREV_LATEST" ]]; then
+        # Remove link and create new one
+        echo "${PREV_LATEST} -> $PREV_LINK"
+
+        rm "$LATEST_LINK"
+        rm -f "$PREV_LINK"
+        ln -s "$PREV_LATEST" "$PREV_LINK"
+    fi
+
+    echo "${TARGET_DIR} -> ${LATEST_LINK}"
+    ln -s "${TARGET_DIR}" "$LATEST_LINK"
+fi

@@ -1,0 +1,85 @@
+#!/bin/zsh
+CACHE_PATH="$HOME/.cache/mine"
+LVM_GROUPS="$CACHE_PATH/lvm_groups"
+UDISKCTL='udisksctl'
+
+function normalize_disk() {
+    local file_path="$1"
+
+    # Check whether file path is a symbolic link
+    if [[ -L "$file_path" ]]; then
+        file_path="$(readlink -f $1)"
+    fi
+
+    # Check whether file_path is a block device
+    if [[ -b "$file_path" ]]; then
+        echo $file_path
+    elif [[ ${file_path:0:1} != "/" ]]; then
+        # See if it's part of a volume group
+        local volume_group="$(head -n 1 $LVM_GROUPS)"
+        file_path="/dev/mapper/${volume_group}-$file_path"
+
+        normalize_disk "$file_path"
+        return $?
+    else
+        return 1
+    fi
+}
+
+function luks_name() {
+    local base_n="$(basename $1)"
+    local real_name="$(perl -pe 's/^.*?(\-[\-]?)//g' <<< $base_n)"
+    echo "cryptutil-luks-${real_name}"
+}
+
+function mount_disk() {
+    local TO_MOUNT="$1"
+    local LUKS_NAME="$(luks_name $TO_MOUNT)"
+    local LUKS_PATH="/dev/mapper/$LUKS_NAME"
+    local block_dev=$(normalize_disk $TO_MOUNT)
+    if  [[ -z "$block_dev" ]]; then
+        echo "No block device found" >&2
+        exit 1
+    fi
+
+    echo "Mounting disk"
+    if ! [[ -b "$LUKS_PATH" ]]; then
+        sudo cryptsetup luksOpen "$block_dev" "$LUKS_NAME"
+        if [[ $? -ne 0 ]]; then
+            echo "Cannot open disk: $TO_MOUNT"
+            exit 1
+        fi
+    fi
+
+    ${UDISKCTL} mount -b "$LUKS_PATH"
+}
+
+function unmount_disk() {
+    local TO_UNMOUNT="$1"
+    local block_device_path="/dev/mapper/$(luks_name $TO_UNMOUNT)"
+
+    echo "Unmounting disk: $block_device_path"
+    umount "$block_device_path"
+    sudo cryptsetup luksClose "$block_device_path"
+}
+
+# Cache check
+if [[ ! -d "$CACHE_PATH" ]]; then
+    mkdir -p "$CACHE_PATH"
+    
+    # Read LVM groups
+    sudo vgs | tail -n +2 | awk '{print $1}' >$LVM_GROUPS
+fi
+
+
+if [[ $1 =~ 'u[n]?mount' ]]; then
+    unmount_disk "${@:2}"
+elif [[ $1 == 'mount' ]]; then
+    mount_disk "${@:2}"
+else
+    if [[ -z "$1" ]]; then
+        echo "No action given" >&2
+    else
+        echo "Action \"$1\" not recognized" >&2
+    fi
+fi
